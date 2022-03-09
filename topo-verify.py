@@ -1,3 +1,4 @@
+from audioop import add
 import json
 import sys
 
@@ -35,6 +36,8 @@ def verify(d):
         address = v.get("address")
         if not isinstance(address, str):
             fail_n(i, "Должен быть ключ 'address' со строковым значением.")
+        if not ('1' <= address[1] <= '9' or 'A' <= address[1] <= 'Z'):
+            fail_n(i, "Неизвестная букава", address)
         if address in objs:
             fail("Адрес", address, "повторился в элементе", i)
         if len(address) != 2 or address[0] not in "hemsafbdct":

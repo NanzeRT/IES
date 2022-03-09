@@ -4,6 +4,27 @@ from shutil import rmtree as rmdir
 import os
 import traceback
 
+had_error = False
+
+def main():
+    psm = ips.init_test()
+    if psm.tick == 0:
+        reset()
+    logger.log(f'--- tick {psm.tick} ---')
+    cont = Controller()
+    try:
+        cont.run(psm)
+    except Exception as e:
+        logger.log(traceback.format_exc())
+        logger.flush()
+        reset()
+        if not had_error:
+            had_error = True
+            main() # try again, why not)
+        raise e
+    logger.flush()
+    # psm.save_and_exit()
+
 class Controller:
     def __init__(self) -> None:
         pass
@@ -50,17 +71,4 @@ class Logger:
 logger = Logger('Logs/')
 
 if __name__ == '__main__':
-    psm = ips.init_test()
-    if psm.tick == 0:
-        reset()
-    logger.log(f'--- tick {psm.tick} ---')
-    cont = Controller()
-    try:
-        cont.run(psm)
-    except Exception as e:
-        logger.log(traceback.format_exc())
-        logger.flush()
-        reset()
-        raise e
-    logger.flush()
-    # psm.save_and_exit()
+    main()

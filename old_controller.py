@@ -5,7 +5,7 @@ tick = psm.tick
 
 SELL = 9
 SELL_ = 20
-BUY = 5
+BUY = 15
 
 CELL_DISCHARGE = 10
 CELL_CHARGE = 10
@@ -20,14 +20,25 @@ station_types = {"miniA", "miniB", "main"}
 
 class ControlSystem:
     def main(self):
+        if tick < 5:
+            self.num = 8
+        elif tick % 3 == 0:
+            self.num = 8
+        else:
+            self.num = 0
+
+        psm.orders.tps("t9", self.num)
+        print(f'burning {self.num}')
         self.def_objects()
         if tick == 0:
             self.tick_one()
         self.def_casts()
         self.generation = self.calc_generation()
-        self.consumption = self.calc_consume()
+        self.consumption = self.calc_consume() * 1.05
         self.reserve()
         self.log()
+        if self.get_delta() > 45:
+            psm.orders.line_off('M9', 3)
 
     def __init__(self):
         self.consumption = 0
@@ -39,8 +50,16 @@ class ControlSystem:
         self.cells = {}
         self.diesels = {}
 
-        self.objects = {}
-        self.obj_adr = {}
+        self.objects = {
+            'wind': [],
+            'solar': [],
+            'TPS': []
+        }
+        self.obj_adr = {
+            'wind': [],
+            'solar': [],
+            'TPS': []
+        }
 
         self.houseA_c = None
         self.houseB_c = None
@@ -65,7 +84,10 @@ class ControlSystem:
                 adr = obj.address[0]
                 # Включение
                 for i in range(2 if obj.type == "miniB" else 3):
-                    psm.orders.line_on(adr, i + 1)
+                    if tick != 50 and tick != 51:
+                        psm.orders.line_on(adr, i + 1)
+                    else:
+                        psm.orders.line_off(adr, i + 1)
 
                 # Зачёт модулей
                 for mod in obj.modules:
@@ -81,6 +103,7 @@ class ControlSystem:
 
     def def_casts(self):
         try:
+            0/0
             forecast_log = open("forecast", 'r')
             data = forecast_log.read().split('\n')
         except:
@@ -97,20 +120,26 @@ class ControlSystem:
         else:
             self.houseA_c = list(map(int, data[0].split()))
             if 'houseA' in self.objects:
-                self.houseA_c = filter_cast(psm.forecasts.houseA, self.houseA_c, self.objects['houseA'][0].power.now.consumed)
+                self.houseA_c = filter_cast(
+                    psm.forecasts.houseA, self.houseA_c, self.objects['houseA'][0].power.now.consumed)
             self.houseB_c = list(map(int, data[1].split()))
             if 'houseB' in self.objects:
-                self.houseB_c = filter_cast(psm.forecasts.houseB, self.houseB_c, self.objects['houseB'][0].power.now.consumed)
+                self.houseB_c = filter_cast(
+                    psm.forecasts.houseB, self.houseB_c, self.objects['houseB'][0].power.now.consumed)
             self.hospital_c = list(map(int, data[2].split()))
             if 'hospital' in self.objects:
-                self.hospital_c = filter_cast(psm.forecasts.hospital, self.hospital_c, self.objects['hospital'][0].power.now.consumed)
+                self.hospital_c = filter_cast(
+                    psm.forecasts.hospital, self.hospital_c, self.objects['hospital'][0].power.now.consumed)
             self.factory_c = list(map(int, data[3].split()))
             if 'factory' in self.objects:
-                self.factory_c = filter_cast(psm.forecasts.factory, self.factory_c, self.objects['factory'][0].power.now.consumed)
+                self.factory_c = filter_cast(
+                    psm.forecasts.factory, self.factory_c, self.objects['factory'][0].power.now.consumed)
             self.wind_c = list(map(int, data[4].split()))
-            self.wind_c = filter_cast(psm.forecasts.wind, self.wind_c, psm.wind.now)
+            self.wind_c = filter_cast(
+                psm.forecasts.wind, self.wind_c, psm.wind.now)
             self.sun_c = list(map(int, data[5].split()))
-            self.sun_c = filter_cast(psm.forecasts.sun, self.sun_c, psm.sun.now)
+            self.sun_c = filter_cast(
+                psm.forecasts.sun, self.sun_c, psm.sun.now)
 
         forecast_log.close()
         forecast_log = open("forecast", 'w')
@@ -127,9 +156,14 @@ class ControlSystem:
                 generation += BUY
         for obj in psm.objects:
             if obj.type == "wind":
-                generation += obj.power.now.generated * cast_multiplier(psm.forecasts.wind, self.wind_c) ** .1
+                generation += obj.power.now.generated * \
+                    cast_multiplier(psm.forecasts.wind, self.wind_c) ** .1
             elif obj.type == "solar":
-                generation += obj.power.now.generated * cast_multiplier(psm.forecasts.sun, self.sun_c)
+                generation += obj.power.now.generated * \
+                    cast_multiplier(psm.forecasts.sun, self.sun_c)
+            elif obj.type == "TPS":
+                generation += max((max(0, obj.power.now.generated * 0.6 - 0.5) +
+                                  self.num * (self.num**2 / 128 + 0.4)) - 1, 0)
 
         return generation
 
@@ -141,13 +175,17 @@ class ControlSystem:
                 consumption += SELL if psm.fails[tick] else SELL_
         for obj in psm.objects:
             if obj.type == "houseA":
-                consumption += obj.power.now.consumed * cast_multiplier(psm.forecasts.houseA, self.houseA_c)
+                consumption += obj.power.now.consumed * \
+                    cast_multiplier(psm.forecasts.houseA, self.houseA_c)
             elif obj.type == "houseB":
-                consumption += obj.power.now.consumed * cast_multiplier(psm.forecasts.houseB, self.houseB_c)
+                consumption += obj.power.now.consumed * \
+                    cast_multiplier(psm.forecasts.houseB, self.houseB_c)
             elif obj.type == "factory":
-                consumption += obj.power.now.consumed * cast_multiplier(psm.forecasts.factory, self.factory_c)
+                consumption += obj.power.now.consumed * \
+                    cast_multiplier(psm.forecasts.factory, self.factory_c)
             elif obj.type == "hospital":
-                consumption += obj.power.now.consumed * cast_multiplier(psm.forecasts.hospital, self.hospital_c)
+                consumption += obj.power.now.consumed * \
+                    cast_multiplier(psm.forecasts.hospital, self.hospital_c)
         with open('cons', 'r') as f:
             f = f.read()
             last_cons = (float(f) if len(f) > 0 else consumption)
@@ -167,15 +205,18 @@ class ControlSystem:
         return self.generation - self.consumption
 
     def reserve(self):
+        if (len(self.storages) + sum(self.cells.values())) == 0:
+            return
         if self.stored / (len(self.storages) + sum(self.cells.values())) / MAX_STORAGE < .1:
             with open('buy', 'a') as buy:
                 buy.write(f'{tick + 2} ')
                 psm.orders.buy(BUY, 2)
-        
-        if self.stored / (len(self.storages) + sum(self.cells.values())) / MAX_STORAGE > .85:
+
+        if self.stored / (len(self.storages) + sum(self.cells.values())) / MAX_STORAGE > .85 or \
+           self.stored / (len(self.storages) + sum(self.cells.values())) / MAX_STORAGE > .45 and 48 <= tick <= 70:
             with open('sell', 'a') as sell:
                 sell.write(f'{tick + 2} ')
-                psm.orders.sell(SELL if psm.fails[tick + 2] else SELL_, 4)
+                psm.orders.sell(SELL if psm.fails[tick + 2] else SELL_, 3.49)
 
         if self.stored / (len(self.storages) + sum(self.cells.values())) / 9.5 >= 100 - tick:
             if self.storages:
@@ -185,31 +226,37 @@ class ControlSystem:
                 self.generation += char * len(self.storages)
             if self.cells:
                 count = 10
-                char = min(-self.get_delta() / count, self.cell_stored / count, STORAGE_DISCHARGE)
+                char = min(-self.get_delta() / count,
+                           self.cell_stored / count, STORAGE_DISCHARGE)
                 for adr in self.cells.keys():
                     psm.orders.discharge(adr, char)
                 self.generation += char * count
         elif self.get_delta() > 0:
             if self.storages:
-                char = min(self.get_delta() / len(self.storages), MAX_STORAGE - self.stored / len(self.storages), STORAGE_CHARGE)
+                char = min(self.get_delta() / len(self.storages), MAX_STORAGE -
+                           self.stored / len(self.storages), STORAGE_CHARGE)
+                print(f'charging on {char}')
                 for adr in self.storages:
                     psm.orders.charge(adr, char)
                 self.consumption += char * len(self.storages)
             if self.cells:
                 count = sum(self.cells.values())
-                char = min(self.get_delta() / count, MAX_STORAGE - self.cell_stored / count, STORAGE_CHARGE)
+                char = min(self.get_delta() / count, MAX_STORAGE -
+                           self.cell_stored / count, STORAGE_CHARGE)
                 for adr in self.cells.keys():
                     psm.orders.charge(adr, char)
                 self.consumption += char * count
         else:
             if self.storages:
-                char = min(-self.get_delta() / len(self.storages), self.stored / len(self.storages), STORAGE_DISCHARGE)
+                char = min(-self.get_delta() / len(self.storages),
+                           self.stored / len(self.storages), STORAGE_DISCHARGE)
                 for adr in self.storages:
                     psm.orders.discharge(adr, char)
                 self.generation += char * len(self.storages)
             if self.cells:
                 count = sum(self.cells.values())
-                char = min(-self.get_delta() / count, self.cell_stored / count, STORAGE_DISCHARGE)
+                char = min(-self.get_delta() / count,
+                           self.cell_stored / count, STORAGE_DISCHARGE)
                 for adr in self.cells.keys():
                     psm.orders.discharge(adr, char)
                 self.generation += char * count
@@ -224,9 +271,9 @@ class ControlSystem:
         print(f'delta: {self.get_delta()}')
         print(f'objects: {self.obj_adr}')
         print(self.consumption,
-        self.generation,
-        self.stored,
-        self.cell_stored)
+              self.generation,
+              self.stored,
+              self.cell_stored)
 
         logger = open('log', 'a')
         logger.write(f'tick {psm.tick}\n')
@@ -234,6 +281,11 @@ class ControlSystem:
                      f' {" ".join(f"{obj.address} - {obj.power.now.generated}" for obj in self.objects["solar"])}\n')
         logger.write(f'wind: {psm.wind.now} wind powers:' +
                      f' {" ".join(f"{obj.address} - {obj.power.now.generated}" for obj in self.objects["wind"])}\n')
+        logger.write(f'tps: {psm.wind.now} tps powers:' +
+                     f' {" ".join(f"{obj.address} - {obj.power.now.generated}" for obj in self.objects["TPS"])}\n')
+        logger.write(f'burning {self.num}\n')
+        print(f'tps: {psm.wind.now} tps powers:' +
+              f' {" ".join(f"{obj.address} - {obj.power.now.generated}" for obj in self.objects["TPS"])}\n')
         logger.write(f'final delta: {self.get_delta()}\n')
         logger.write('---------------------------\n')
         logger.close()
@@ -271,4 +323,5 @@ def cast_multiplier(cast, nums):
 
 if __name__ == '__main__':
     ControlSystem().main()
+    print(psm.orders.humanize())
     psm.save_and_exit()

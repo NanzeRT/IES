@@ -26,6 +26,12 @@ stations = {
     "miniB",  # мини-подстанции Б
 }
 
+type2letter = {
+    "main" : "M",
+    "mainA" : "e",
+    "mainB" : "m"
+}
+
 
 def main():
     psm = ips.init_test()
@@ -34,11 +40,13 @@ def main():
     logger.log(f'--- tick {psm.tick} ---')
     cont = Controller()
     try:
-        cont.run(psm)
+        cont.init(psm)
+        cont.run()
     except Exception as e:
         logger.log(traceback.format_exc())
         logger.flush()
         reset()
+        global had_error
         if not had_error:
             had_error = True
             main()  # try again, why not)
@@ -52,6 +60,7 @@ def main():
 class Controller:
     def __init__(self) -> None:
         self.psm = None
+        self.module: Module = None
         self.addr2obj = {}
         self.type2addrs = {
             "main": [],
@@ -69,19 +78,36 @@ class Controller:
         self.net2addrs = {}
         self.addr2nets = {}
 
-    def run(self, psm: Powerstand):
-        psm.objects[0].path
+    def run(self):
+        self.module.proceed()
+        print(self.module.get_delta())
 
     def init(self, psm: Powerstand):
+        self.psm = psm
+        location2addr = {}
+        for obj in psm.objects:
+            if obj.type in stations:
+                location2addr[obj.path[0]] = obj.address[0]
+
+        for i, net in psm.networks.items():
+            if len(net.location) == 0:
+                continue
+            if location2addr[net.location[:-1]] not in self.addr2nets:
+                self.addr2nets[location2addr[net.location[:-1]]] = {}
+            self.addr2nets[location2addr[net.location[:-1]]][net.location[-1].line] = i
+
         for obj in psm.objects:
             for i in range(len(obj.address)):
                 self.addr2obj[obj.address[i]] = obj
                 self.type2addrs[obj.type] += [obj.address[i]]
-                self.net2addrs[obj.path[i]] += [obj.address[i]]
-        for i, net in psm.networks.items():
-            if not net.location[0] in self.addr2nets:
-                self.addr2nets[net.location[0]] = {}
-            self.addr2nets[net.location[0]][net.location[1]] = i
+                if len(obj.path[i]) != 0:
+                    ind = self.addr2nets[location2addr[obj.path[i][:-1]]][obj.path[i][-1].line]
+                    if ind not in self.net2addrs:
+                        self.net2addrs[ind] = []
+                    self.net2addrs[ind] += [obj.address[i]]
+        
+        self.module = Module(self.type2addrs['main'][0])
+        self.module.do_tree(self.addr2obj, self.net2addrs, self.addr2nets)
 
 
 class Module:
@@ -99,14 +125,21 @@ class Module:
         for line in self.lines:
             for ch in line.childs:
                 ch.proceed()
-            line.calc_delta()
+            line.calc_objects()
 
     def do_tree(self, addr2obj: dict[str, Object], net2addrs: dict[int, list[str]], addr2nets: dict[str, dict[int, int]]):
         self.station = addr2obj[self.addr]
-        
+        for line, net in addr2nets[self.addr].items():
+            for addr in net2addrs[net]:
+                obj = addr2obj[addr]
+                if obj.type in stations:
+                    self.lines[line - 1].childs += [Module(addr)]
+                    self.lines[line - 1].childs[-1].do_tree(addr2obj, net2addrs, addr2nets)
+                else:
+                    self.lines[line - 1].objects += [obj]
 
     def get_delta(self) -> float:
-        return self.delta + sum(line.get_delta() for line in self.lines)
+        return sum(line.get_delta() for line in self.lines)
 
     def get_stored(self) -> float:
         return sum(line.get_stored() for line in self.lines)
@@ -128,23 +161,47 @@ class Line:
         return x - abs(x) * min(x * x / 3600, .25)
 
     def get_stored(self) -> float:
-        return
+        return sum(map(get_stored, self.objects)) + sum(child.get_stored() for child in self.childs)
 
     def get_storages(self) -> int:
-        return
+        return sum(map(get_storages, self.objects)) + sum(child.get_storages() for child in self.childs)
 
-    def calc_delta(self):
+    def calc_objects(self):
         self.delta = 0
         self.delta -= sum(map(get_consumption, self.objects))
         self.delta += sum(map(get_generation, self.objects))
+        self.delta += sum(map(get_storage_delta, self.objects))
 
 
 def get_consumption(obj: Object) -> float:
-    pass
+    if obj.type not in consumers:
+        return 0
+    return -1
 
 
 def get_generation(obj: Object) -> float:
-    pass
+    if obj.type not in generators:
+        return 0
+    return 1
+
+
+def get_storage_delta(obj: Object) -> float:
+    if obj.type != 'storage':
+        return 0
+    return 0.1
+
+
+def get_stored(obj: Object) -> float:
+    if obj.type != 'storage':
+        return 0
+    return obj.charge.now
+
+
+def get_storages(obj: Object) -> float:
+    if obj.type != 'storage':
+        return 0
+    return 1
+
 
 
 def reset():

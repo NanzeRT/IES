@@ -77,6 +77,7 @@ class Controller:
         }
         self.net2addrs = {}
         self.addr2nets = {}
+        self.doubles_off: dict[(str, str), bool] = {}
 
     def run(self):
         self.module.proceed()
@@ -97,6 +98,8 @@ class Controller:
             self.addr2nets[location2addr[net.location[:-1]]][net.location[-1].line] = i
 
         for obj in psm.objects:
+            if len(obj.address) > 1:
+                self.doubles_off[obj.address] = False
             for i in range(len(obj.address)):
                 self.addr2obj[obj.address[i]] = obj
                 self.type2addrs[obj.type] += [obj.address[i]]
@@ -110,22 +113,25 @@ class Controller:
         self.module.do_tree(self.addr2obj, self.net2addrs, self.addr2nets)
 
 
+
 class Module:
-    def __init__(self, addr) -> None:
+    def __init__(self, addr, controller) -> None:
         self.addr = addr  # 'M9'
         self.station = None
-        self.lines = [Line(), Line()] if addr[0] == 'm' else \
-            [Line(), Line(), Line()]
+        self.lines = [Line(controller, 0), Line(controller, 1)] if addr[0] == 'm' else \
+            [Line(controller, 0), Line(controller, 1), Line(controller, 2)]
         self.parent = None
         self.stored = 0
         self.stored_available = 0
         self.storages = 0
+        self.cont = controller
 
     def proceed(self):
         for line in self.lines:
             for ch in line.childs:
                 ch.proceed()
             line.calc_objects()
+            self.inspect()
 
     def do_tree(self, addr2obj: dict[str, Object], net2addrs: dict[int, list[str]], addr2nets: dict[str, dict[int, int]]):
         self.station = addr2obj[self.addr]
@@ -133,7 +139,7 @@ class Module:
             for addr in net2addrs[net]:
                 obj = addr2obj[addr]
                 if obj.type in stations:
-                    self.lines[line - 1].childs += [Module(addr)]
+                    self.lines[line - 1].childs += [Module(addr, self.cont)]
                     self.lines[line - 1].childs[-1].do_tree(addr2obj, net2addrs, addr2nets)
                 else:
                     self.lines[line - 1].objects += [obj]
@@ -146,15 +152,20 @@ class Module:
 
     def get_storages(self) -> int:
         return sum(line.get_storages() for line in self.lines)
+    
+    def get_doubles(self) -> list[(str, str)]:
+        return sum(line.get_doubles() for line in self.lines)
 
 
 class Line:
-    def __init__(self) -> None:
+    def __init__(self, controller: Controller, num) -> None:
         self.childs: list[Module] = []  # [Module]
-        self.objects = []
+        self.objects: list[Object] = []
         self.delta = 0
-        self.parent = None
+        self.parent: Module = None
         self.powered = False
+        self.cont = controller
+        self.num = num
 
     def get_delta(self) -> float:
         x = self.delta + sum(child.get_delta() for child in self.childs)
@@ -171,6 +182,20 @@ class Line:
         self.delta -= sum(map(get_consumption, self.objects))
         self.delta += sum(map(get_generation, self.objects))
         self.delta += sum(map(get_storage_delta, self.objects))
+    
+    def inspect(self):
+        wear = self.cont.psm.networks[self.cont.addr2nets[self.parent.addr][self.num]].wear
+        if wear < 0.4:
+            return
+        doubles = set(self.get_doubles())
+        for db in doubles:
+            if self.cont.doubles_off[db]:
+                return
+        
+
+
+    def get_doubles(self) -> list[tuple[str, str]]:
+        return sum(ch for ch in self.childs) + sum(obj.address for obj in self.objects if len(obj.address) > 1)
 
 
 def get_consumption(obj: Object) -> float:

@@ -4,17 +4,17 @@ psm = ips.init()
 tick = psm.tick
 
 DO_THING = False
-offticks = {50, 51}
+offticks = {49, 50}
 
 SELL = 9
-SELL_ = 20
+SELL_ = 25
 BUY = 15
 
 CELL_DISCHARGE = 10
 CELL_CHARGE = 10
 MAX_BATTERY = 50
-STORAGE_DISCHARGE = 10
-STORAGE_CHARGE = 10
+STORAGE_DISCHARGE = 15
+STORAGE_CHARGE = 15
 MAX_STORAGE = 100
 MAX_DIESEL = 5
 
@@ -23,14 +23,15 @@ station_types = {"miniA", "miniB", "main"}
 
 class ControlSystem:
     def main(self):
-        if tick < 5:
-            self.num = 8
-        elif tick % 3 == 0:
-            self.num = 8
-        else:
-            self.num = 0
+        # if tick < 5:
+        #     self.num = 8
+        # elif tick % 3 == 0:
+        #     self.num = 8
+        # else:
+        #     self.num = 0
+        self.num = 10
 
-        psm.orders.tps("t5", self.num)
+        psm.orders.tps("tH", self.num)
         print(f'burning {self.num}')
         self.def_objects()
         if tick == 0:
@@ -85,7 +86,7 @@ class ControlSystem:
                 adr = obj.address[0]
                 # Включение
                 for i in range(2 if obj.type == "miniB" else 3):
-                    if tick in offticks and DO_THING:
+                    if tick not in offticks or not DO_THING:
                         psm.orders.line_on(adr, i + 1)
                     else:
                         psm.orders.line_off(adr, i + 1)
@@ -208,15 +209,15 @@ class ControlSystem:
     def reserve(self):
         if (len(self.storages) + sum(self.cells.values())) == 0:
             return
-        if (not DO_THING or tick + 2 not in offticks) and self.stored / (len(self.storages) + sum(self.cells.values())) / MAX_STORAGE < .1:
+        if (not DO_THING or tick + 1 not in offticks) and self.stored / (len(self.storages) + sum(self.cells.values())) / MAX_STORAGE < .1:
             with open('buy', 'a') as buy:
-                buy.write(f'{tick + 2} ')
+                buy.write(f'{tick + 1} ')
                 psm.orders.buy(BUY, 2)
 
-        if (not DO_THING or tick + 2 not in offticks) and self.stored / (len(self.storages) + sum(self.cells.values())) / MAX_STORAGE > .85 or \
-           (not DO_THING or tick + 2 not in offticks) and self.stored / (len(self.storages) + sum(self.cells.values())) / MAX_STORAGE > .45 and 48 <= tick <= 70:
+        if (not DO_THING or tick + 1 not in offticks) and self.stored / (len(self.storages) + sum(self.cells.values())) / MAX_STORAGE > .85 or \
+           (not DO_THING or tick + 1 not in offticks) and self.stored / (len(self.storages) + sum(self.cells.values())) / MAX_STORAGE > .45 and 48 <= tick <= 70:
             with open('sell', 'a') as sell:
-                sell.write(f'{tick + 2} ')
+                sell.write(f'{tick + 1} ')
                 psm.orders.sell(SELL if psm.fails[tick + 2] else SELL_, 3.49)
 
         if self.stored / (len(self.storages) + sum(self.cells.values())) / 9.5 >= 100 - tick:

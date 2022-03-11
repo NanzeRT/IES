@@ -1,7 +1,7 @@
 import ips
 
-psm = ips.init()
-tick = psm.tick
+psm = ips.init_test()
+tick = psm.tick * 0
 
 DO_THING = False
 offticks = {49, 50}
@@ -326,4 +326,4 @@ def cast_multiplier(cast, nums):
 if __name__ == '__main__':
     ControlSystem().main()
     print(psm.orders.humanize())
-    psm.save_and_exit()
+    #psm.save_and_exit()

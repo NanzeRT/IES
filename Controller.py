@@ -5,6 +5,16 @@ import traceback
 
 from ips.structures import Object, Powerstand
 
+sunny_lines_raw = set(()) # set((('M9', 1),))
+subsunny_lines_raw = set()
+sunny_lines = set()
+subsunny_lines = set()
+sun_level = 6
+presun_repair_shift = 2
+
+BUY_ADD = 2
+SELL_ADD = 2
+
 had_error = False
 
 consumers = {
@@ -28,15 +38,17 @@ stations = {
 
 type2letter = {
     "main" : "M",
-    "mainA" : "e",
-    "mainB" : "m"
+    "miniA" : "e",
+    "miniB" : "m"
 }
 
+num2index = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ'
 
-def main():
-    psm = ips.init_test()
+def main(i):
+    psm = ips.from_log('1646909402.977471329s.json', i)
     if psm.tick == 0:
         reset()
+    psm.config
     logger.log(f'--- tick {psm.tick} ---')
     cont = Controller()
     try:
@@ -49,11 +61,12 @@ def main():
         global had_error
         if not had_error:
             had_error = True
-            main()  # try again, why not)
+            main(i)  # try again, why not)
         raise e
     logger.flush()
     if psm.tick == 99:
         logger.next_log()
+    print(psm.orders.humanize())
     # psm.save_and_exit()
 
 
@@ -78,10 +91,33 @@ class Controller:
         self.net2addrs = {}
         self.addr2nets = {}
         self.doubles_off: dict[(str, str), bool] = {}
+        self.storage2delta: dict[str, float] = {}
 
     def run(self):
         self.module.proceed()
-        print(self.module.get_delta())
+        self.module.proceed()
+
+        b = self.module.get_storages_available()
+        if b != 0:
+            self.module.order_power_recursive(-self.module.get_delta() / b)
+
+        b = self.module.get_storages_available()
+        if b != 0:
+            self.module.order_power_recursive(-self.module.get_delta() / b)
+
+        b = self.module.get_storages_available()
+        if b != 0:
+            self.module.order_power_recursive(-self.module.get_delta() / b)
+
+        b = self.module.get_storages_available()
+        if b != 0:
+            self.module.order_power_recursive(-self.module.get_delta() / b)
+        
+        self.exchange()
+        self.order()
+        delta = self.module.get_delta()
+
+        print(delta)
 
     def init(self, psm: Powerstand):
         self.psm = psm
@@ -93,49 +129,97 @@ class Controller:
         for i, net in psm.networks.items():
             if len(net.location) == 0:
                 continue
-            if location2addr[net.location[:-1]] not in self.addr2nets:
-                self.addr2nets[location2addr[net.location[:-1]]] = {}
-            self.addr2nets[location2addr[net.location[:-1]]][net.location[-1].line] = i
+            ind = type2letter[net.location[-1].id[0]] + num2index[net.location[-1].id[1]]
+            if ind not in self.addr2nets:
+                self.addr2nets[ind] = {}
+            self.addr2nets[ind][net.location[-1].line] = i
+            # self.addr2nets[location2addr[net.location[:-1]]][net.location[-1].line] = i
 
         for obj in psm.objects:
             if len(obj.address) > 1:
                 self.doubles_off[obj.address] = False
+            if obj.type == 'storage':
+                self.storage2delta[obj.address[0]] = 0
             for i in range(len(obj.address)):
                 self.addr2obj[obj.address[i]] = obj
                 self.type2addrs[obj.type] += [obj.address[i]]
                 if len(obj.path[i]) != 0:
-                    ind = self.addr2nets[location2addr[obj.path[i][:-1]]][obj.path[i][-1].line]
+                    ind = self.addr2nets[type2letter[obj.path[i][-1].id[0]] + num2index[obj.path[i][-1].id[1]]][obj.path[i][-1].line]
                     if ind not in self.net2addrs:
                         self.net2addrs[ind] = []
                     self.net2addrs[ind] += [obj.address[i]]
         
-        self.module = Module(self.type2addrs['main'][0])
+        global sunny_lines_raw
+        global subsunny_lines_raw
+        for l in sunny_lines_raw:
+            sunny_lines_raw += [self.addr2nets[l[0]][l[1]]]
+        for l in subsunny_lines_raw:
+            subsunny_lines_raw += [self.addr2nets[l[0]][l[1]]]
+
+        self.module = Module(self.type2addrs['main'][0], self)
         self.module.do_tree(self.addr2obj, self.net2addrs, self.addr2nets)
+        self.module.add_delta += self.get_exchange_delta()
 
+    def exchange(self):
+        power = self.module.get_stored_raw()
+        cells = self.module.get_storages_raw()
+        fullness = power / cells / 100
 
+        if fullness < 0.2:
+            predict = self.module.get_approx_delta(self.psm.tick + 1)
+            predict -= BUY_ADD
+            if predict < 0:
+                with open('SB/exchange', 'a') as exfile:
+                    exfile.write(f'{self.psm.tick + 1} {-predict}\n')
+                    self.psm.orders.buy(-predict, 2)
+        elif fullness > 0.8:
+            predict = self.module.get_approx_delta(self.psm.tick + 1)
+            predict += SELL_ADD
+            if predict > 0:
+                with open('SB/exchange', 'a') as exfile:
+                    exfile.write(f'{self.psm.tick + 1} {-predict}\n')
+                    self.psm.orders.sell(predict, 3.49)
+
+    def get_exchange_delta(self) -> float:
+        if not os.path.isfile('SB/exchange'):
+            return 0
+        with open('SB/exchange', 'r') as exfile:
+            transactions = dict(tuple((lambda x: (int(x[0]), float(x[1])))(line.split(' ')) for line in exfile.read().strip().split('\n')))
+            if self.psm.tick in transactions:
+                return transactions[self.psm.tick]
+        return 0
+
+    def order(self):
+        for addr, val in self.storage2delta.items():
+            if val < 0:
+                self.psm.orders.charge(addr, -val)
+            if val > 0:
+                self.psm.orders.discharge(addr, val)
 
 class Module:
     def __init__(self, addr, controller) -> None:
         self.addr = addr  # 'M9'
         self.station = None
-        self.lines = [Line(controller, 0), Line(controller, 1)] if addr[0] == 'm' else \
-            [Line(controller, 0), Line(controller, 1), Line(controller, 2)]
+        self.lines = [Line(controller, 0, self), Line(controller, 1, self)] if addr[0] == 'm' else \
+            [Line(controller, 0, self), Line(controller, 1, self), Line(controller, 2, self)]
         self.parent = None
         self.stored = 0
         self.stored_available = 0
         self.storages = 0
         self.cont = controller
+        self.add_delta = 0
 
     def proceed(self):
         for line in self.lines:
             for ch in line.childs:
                 ch.proceed()
             line.calc_objects()
-            self.inspect()
+            line.inspect()
 
     def do_tree(self, addr2obj: dict[str, Object], net2addrs: dict[int, list[str]], addr2nets: dict[str, dict[int, int]]):
         self.station = addr2obj[self.addr]
         for line, net in addr2nets[self.addr].items():
+            self.lines[line - 1].net = net
             for addr in net2addrs[net]:
                 obj = addr2obj[addr]
                 if obj.type in stations:
@@ -143,48 +227,86 @@ class Module:
                     self.lines[line - 1].childs[-1].do_tree(addr2obj, net2addrs, addr2nets)
                 else:
                     self.lines[line - 1].objects += [obj]
+            self.lines[line - 1].power_on()
 
     def get_delta(self) -> float:
-        return sum(line.get_delta() for line in self.lines)
+        return sum(line.get_delta() for line in self.lines) + self.add_delta
+
+    def get_approx_delta(self, tick) -> float:
+        return sum(line.get_approx_delta(tick) for line in self.lines)
 
     def get_stored(self) -> float:
         return sum(line.get_stored() for line in self.lines)
 
+    def get_stored_raw(self) -> float:
+        return sum(line.get_stored_raw() for line in self.lines)
+
     def get_storages(self) -> int:
         return sum(line.get_storages() for line in self.lines)
+
+    def get_storages_raw(self) -> int:
+        return sum(line.get_storages_raw() for line in self.lines)
+
+    def get_storages_available(self) -> int:
+        return sum(line.get_storages_available() for line in self.lines)
     
     def get_doubles(self) -> list[(str, str)]:
         return sum(line.get_doubles() for line in self.lines)
 
+    # заказывет по amount на каждом активном накопителе
+    def order_power_recursive(self, amount):
+        for line in self.lines:
+            line.order_power_recursive(amount)
+
 
 class Line:
-    def __init__(self, controller: Controller, num) -> None:
+    def __init__(self, controller: Controller, num: int, parent: Module) -> None:
         self.childs: list[Module] = []  # [Module]
         self.objects: list[Object] = []
         self.delta = 0
-        self.parent: Module = None
+        self.parent: Module = parent
         self.powered = False
         self.cont = controller
         self.num = num
+        self.net = -1
 
     def get_delta(self) -> float:
         x = self.delta + sum(child.get_delta() for child in self.childs)
+        return self.powered * (x - abs(x) * min(x * x / 3600, .25))
+
+    def get_approx_delta(self, tick) -> float:
+        x = 0
+        x -= sum(map(lambda x: get_consumption(x, tick, self.cont), self.objects))
+        x += sum(map(lambda x: get_generation(x, tick, self.cont), self.objects))
+        x += sum(child.get_approx_delta(tick) for child in self.childs)
         return x - abs(x) * min(x * x / 3600, .25)
 
     def get_stored(self) -> float:
-        return sum(map(get_stored, self.objects)) + sum(child.get_stored() for child in self.childs)
+        return self.powered * (sum(map(lambda x: get_stored(x, self.cont), self.objects)) + sum(child.get_stored() for child in self.childs))
+
+    def get_stored_raw(self) -> float:
+        return (sum(map(lambda x: get_stored(x, self.cont), self.objects)) + sum(child.get_stored() for child in self.childs))
 
     def get_storages(self) -> int:
-        return sum(map(get_storages, self.objects)) + sum(child.get_storages() for child in self.childs)
+        return self.powered * (sum(map(get_storages, self.objects)) + sum(child.get_storages() for child in self.childs))
+
+    def get_storages_raw(self) -> int:
+        return (sum(map(get_storages, self.objects)) + sum(child.get_storages_raw() for child in self.childs))
+
+    def get_storages_available(self) -> int:
+        return self.powered * (sum(map(get_storages_available, self.objects)) + sum(child.get_storages() for child in self.childs))
 
     def calc_objects(self):
         self.delta = 0
-        self.delta -= sum(map(get_consumption, self.objects))
-        self.delta += sum(map(get_generation, self.objects))
-        self.delta += sum(map(get_storage_delta, self.objects))
+        self.delta -= sum(map(lambda x: get_consumption(x, self.cont.psm.tick, self.cont), self.objects))
+        self.delta += sum(map(lambda x: get_generation(x, self.cont.psm.tick, self.cont), self.objects))
+        self.delta += sum(map(lambda x: get_storage_delta(x, self.cont), self.objects))
     
     def inspect(self):
-        wear = self.cont.psm.networks[self.cont.addr2nets[self.parent.addr][self.num]].wear
+        if self.cont.psm.networks[self.net].broken > 0:
+            self.power_off()
+            return
+        wear = self.cont.psm.networks[self.net].wear
         if wear < 0.4:
             return
         doubles = set(self.get_doubles())
@@ -192,38 +314,79 @@ class Line:
             if self.cont.doubles_off[db]:
                 return
         
+        step = 0.70
 
-
+        if self.net in sunny_lines or self.net in subsunny_lines:
+            if self.cont.psm.forecasts.sun[self.cont.psm.tick] > sun_level:
+                pass
+            elif self.cont.psm.tick + presun_repair_shift < 100 and self.cont.psm.forecasts.sun[self.cont.psm.tick + presun_repair_shift] > sun_level:
+                step = 0.2 if self.net in sunny_lines else 0.5
+        
+        if wear > step:
+            self.power_off()
+        
     def get_doubles(self) -> list[tuple[str, str]]:
-        return sum(ch for ch in self.childs) + sum(obj.address for obj in self.objects if len(obj.address) > 1)
+        return sum((ch.get_doubles() for ch in self.childs), []) + sum(([obj.address] for obj in self.objects if len(obj.address) > 1), [])
 
+    def power_on(self):
+        self.powered = True
+        self.cont.psm.orders.line_on(self.parent.addr, self.num + 1)
 
-def get_consumption(obj: Object) -> float:
+    def power_off(self):
+        self.powered = False
+        self.cont.psm.orders.line_off(self.parent.addr, self.num + 1)
+        doubles = set(self.get_doubles())
+        for db in doubles:
+            self.cont.doubles_off[db] = True
+
+    # заказывет по amount на каждом активном накопителе
+    def order_power_recursive(self, amount):
+        for obj in self.objects:
+            if obj.type != 'storage':
+                continue
+
+            self.cont.storage2delta[obj.address[0]] += amount
+            self.cont.storage2delta[obj.address[0]] = max(self.cont.storage2delta[obj.address[0]], max(-15, -100 + obj.charge.now))
+            self.cont.storage2delta[obj.address[0]] = min(self.cont.storage2delta[obj.address[0]], min(15, obj.charge.now))
+        self.calc_objects()
+        for ch in self.childs:
+            ch.order_power_recursive(amount)
+        
+
+# TODO
+def get_consumption(obj: Object, tick: int, cont: Controller) -> float:
     if obj.type not in consumers:
         return 0
     return -1
 
 
-def get_generation(obj: Object) -> float:
+# TODO
+def get_generation(obj: Object, tick: int, cont: Controller) -> float:
     if obj.type not in generators:
         return 0
     return 1
 
 
-def get_storage_delta(obj: Object) -> float:
+def get_storage_delta(obj: Object, cont: Controller) -> float:
     if obj.type != 'storage':
         return 0
-    return 0.1
+    return cont.storage2delta[obj.address[0]]
 
 
-def get_stored(obj: Object) -> float:
+def get_stored(obj: Object, cont: Controller) -> float:
     if obj.type != 'storage':
-        return 0
-    return obj.charge.now
+        return 0    
+    return obj.charge.now - cont.storage2delta[obj.address[0]]
 
 
 def get_storages(obj: Object) -> float:
     if obj.type != 'storage':
+        return 0
+    return 1
+
+
+def get_storages_available(obj: Object) -> float:
+    if obj.type != 'storage' or get_stored(obj) >= 99.9:
         return 0
     return 1
 
@@ -272,4 +435,5 @@ class Logger:
 logger = Logger('Logs/')
 
 if __name__ == '__main__':
-    main()
+    for i in range(100):
+        main(i)

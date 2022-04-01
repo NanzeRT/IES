@@ -6,15 +6,15 @@ import numpy as np
 
 from ips.structures import Object, Powerstand
 
-sunny_lines_raw = set(())  # set((('M9', 1),))
-subsunny_lines_raw = set()
+sunny_lines_raw = set({})  # set({('M9', 1)})
+subsunny_lines_raw = set({})
 sunny_lines = set()
 subsunny_lines = set()
 sun_level = 6
 presun_repair_shift = 2
 
-BUY_ADD = 2
-SELL_ADD = 2
+BUY_ADD = 0
+SELL_ADD = 0
 
 had_error = False
 
@@ -45,37 +45,45 @@ type2letter = {
 
 num2index = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ'
 
+cont1 = None
 
-def main(i):
-    psm = ips.from_log('Test/1646909402.977471329s.json', i)
+
+def main():
+    # psm = ips.from_log('Test/1646985596.357467292s.json', 42)
+    psm = ips.init()
+    psm.orders.tps("t9", 9)
+    psm.orders.tps("t7", 9)
+    # psm.orders.tps("tB", 10)
     if psm.tick == 0:
         reset()
-    psm.config
     logger.log(f'--- tick {psm.tick} ---')
     cont = Controller()
+    global cont1
+    cont1 = cont
     try:
         cont.init(psm)
         cont.run()
     except Exception as e:
         logger.log(traceback.format_exc())
         logger.flush()
+        logger.next_log()
         reset()
         global had_error
         if not had_error:
             had_error = True
-            # main(i)  # try again, why not)
+            main()  # try again, why not)
         raise e
     logger.flush()
     if psm.tick == 99:
         logger.next_log()
     print(psm.orders.humanize())
-    # psm.save_and_exit()
+    psm.save_and_exit()
 
 
 class Controller:
     def __init__(self) -> None:
         self.psm = None
-        self.module: Module = None
+        self.module = None
         self.addr2obj = {}
         self.type2addrs = {
             "main": [],
@@ -92,14 +100,14 @@ class Controller:
         }
         self.net2addrs = {}
         self.addr2nets = {}
-        self.doubles_off: dict[(str, str), bool] = {}
-        self.storage2delta: dict[str, float] = {}
+        self.doubles_off = {}
+        self.storage2delta = {}
 
     def run(self):
         self.module.proceed()
         self.module.proceed()
 
-        b = self.module.get_storages_available()
+        b = self.module.get_storages_available() + 1
         if b != 0:
             self.module.order_power_recursive(-self.module.get_delta() / b)
 
@@ -114,14 +122,24 @@ class Controller:
         b = self.module.get_storages_available()
         if b != 0:
             self.module.order_power_recursive(-self.module.get_delta() / b)
+
+        a = self.module.get_delta() + self.module.add_delta
+        if a > 46:
+            b = self.module.get_storages_available()
+            if b != 0:
+                self.module.order_power_recursive(-(a - 40) / b)
+
+        if self.psm.tick == 99:
+            self.module.order_power_recursive(150)
 
         self.exchange()
         self.order()
         delta = self.module.get_delta()
 
-        print(delta)
+        print(f'delta: {delta}')
+        logger.log(f'delta: {delta}')
 
-    def init(self, psm: Powerstand):
+    def init(self, psm):
         self.psm = psm
         location2addr = {}
         for obj in psm.objects:
@@ -155,10 +173,12 @@ class Controller:
 
         global sunny_lines_raw
         global subsunny_lines_raw
+        global sunny_lines
+        global subsunny_lines
         for l in sunny_lines_raw:
-            sunny_lines_raw += [self.addr2nets[l[0]][l[1]]]
+            sunny_lines.add(self.addr2nets[l[0]][l[1]])
         for l in subsunny_lines_raw:
-            subsunny_lines_raw += [self.addr2nets[l[0]][l[1]]]
+            subsunny_lines.add(self.addr2nets[l[0]][l[1]])
 
         self.module = Module(self.type2addrs['main'][0], self)
         self.module.do_tree(self.addr2obj, self.net2addrs, self.addr2nets)
@@ -172,6 +192,17 @@ class Controller:
         cells = self.module.get_storages_raw()
         fullness = power / cells / 100
 
+        if self.psm.tick >= 90:
+            predict = self.module.get_approx_delta(self.psm.tick + 1)
+            predict += min(self.module.get_stored_raw() / (100 -
+                           self.psm.tick), 10 * self.module.get_storages_raw())
+            predict = min(predict, 45)
+            if predict > 0:
+                with open('SB/exchange', 'a') as exfile:
+                    exfile.write(f'{self.psm.tick + 1} {-predict}\n')
+                    self.psm.orders.sell(predict, 1.99)
+                    return
+
         if fullness < 0.2:
             predict = self.module.get_approx_delta(self.psm.tick + 1)
             predict -= BUY_ADD
@@ -179,13 +210,22 @@ class Controller:
                 with open('SB/exchange', 'a') as exfile:
                     exfile.write(f'{self.psm.tick + 1} {-predict}\n')
                     self.psm.orders.buy(-predict, 2)
-        elif fullness > 0.8:
+        elif fullness > 0.2:
             predict = self.module.get_approx_delta(self.psm.tick + 1)
-            predict += SELL_ADD
+            predict += SELL_ADD - 5
+            predict = min(predict, 45)
             if predict > 0:
                 with open('SB/exchange', 'a') as exfile:
                     exfile.write(f'{self.psm.tick + 1} {-predict}\n')
-                    self.psm.orders.sell(predict, 3.49)
+                    self.psm.orders.sell(predict, 1.99)
+        elif fullness > 0.5:
+            predict = self.module.get_approx_delta(self.psm.tick + 1)
+            predict += SELL_ADD
+            predict = min(predict, 45)
+            if predict > 0:
+                with open('SB/exchange', 'a') as exfile:
+                    exfile.write(f'{self.psm.tick + 1} {-predict}\n')
+                    self.psm.orders.sell(predict, 1.99)
 
     def get_exchange_delta(self) -> float:
         if not os.path.isfile('SB/exchange'):
@@ -224,10 +264,13 @@ class Module:
             for ch in line.childs:
                 ch.proceed()
             line.calc_objects()
-            line.inspect()
+            try:
+                line.inspect()
+            except:
+                print(f'не удалось инспектировать линию {line.net}')
 
-    def do_tree(self, addr2obj: dict[str, Object], net2addrs: dict[int, list[str]],
-                addr2nets: dict[str, dict[int, int]]):
+    def do_tree(self, addr2obj, net2addrs,
+                addr2nets):
         self.station = addr2obj[self.addr]
         for line, net in addr2nets[self.addr].items():
             self.lines[line - 1].net = net
@@ -262,21 +305,25 @@ class Module:
     def get_storages_available(self) -> int:
         return sum(line.get_storages_available() for line in self.lines)
 
-    def get_doubles(self) -> list[(str, str)]:
-        return sum(line.get_doubles() for line in self.lines)
+    def get_doubles(self):
+        return sum((line.get_doubles() for line in self.lines), [])
 
     # заказывет по amount на каждом активном накопителе
     def order_power_recursive(self, amount):
         for line in self.lines:
             line.order_power_recursive(amount)
 
+    def power_off(self):
+        for line in self.lines:
+            line.power_off()
+
 
 class Line:
     def __init__(self, controller: Controller, num: int, parent: Module) -> None:
-        self.childs: list[Module] = []  # [Module]
-        self.objects: list[Object] = []
+        self.childs = []  # [Module]
+        self.objects = []
         self.delta = 0
-        self.parent: Module = parent
+        self.parent = parent
         self.powered = False
         self.cont = controller
         self.num = num
@@ -329,18 +376,18 @@ class Line:
             if self.cont.doubles_off[db]:
                 return
 
-        step = 0.70
+        step = 0.55
 
         if self.net in sunny_lines or self.net in subsunny_lines:
-            if self.cont.psm.forecasts.sun[self.cont.psm.tick] > sun_level:
+            if self.cont.psm.forecasts.sun[0][self.cont.psm.tick] > sun_level:
                 pass
-            elif self.cont.psm.tick + presun_repair_shift < 100 and self.cont.psm.forecasts.sun[self.cont.psm.tick + presun_repair_shift] > sun_level:
+            elif self.cont.psm.tick + presun_repair_shift < 100 and self.cont.psm.forecasts.sun[0][self.cont.psm.tick + presun_repair_shift] > sun_level:
                 step = 0.2 if self.net in sunny_lines else 0.5
 
         if wear > step:
             self.power_off()
 
-    def get_doubles(self) -> list[tuple[str, str]]:
+    def get_doubles(self):
         return sum((ch.get_doubles() for ch in self.childs), []) + sum(([obj.address] for obj in self.objects if len(obj.address) > 1), [])
 
     def power_on(self):
@@ -348,11 +395,16 @@ class Line:
         self.cont.psm.orders.line_on(self.parent.addr, self.num + 1)
 
     def power_off(self):
-        self.powered = False
-        self.cont.psm.orders.line_off(self.parent.addr, self.num + 1)
-        doubles = set(self.get_doubles())
-        for db in doubles:
-            self.cont.doubles_off[db] = True
+        try:
+            self.powered = False
+            self.cont.psm.orders.line_off(self.parent.addr, self.num + 1)
+            doubles = set(self.get_doubles())
+            for db in doubles:
+                self.cont.doubles_off[db] = True
+            for ch in self.childs:
+                ch.power_off()
+        except:
+            print(f'не удалось отключить линию {self.net}')
 
     # заказывет по amount на каждом активном накопителе
     def order_power_recursive(self, amount):
@@ -399,7 +451,7 @@ def open_file(cont: Controller) -> None:
         s.write(str(our_suns_coors))
 
 
-def read_file() -> list[list[list[float, float]]]:
+def read_file():
     with open('SB/solar', 'r') as s:
         data = eval(s.read())
     return data
@@ -476,8 +528,11 @@ def get_generation(obj: Object, tick: int, cont: Controller) -> float:
     elif type == 'TPS':
         k = 1
         if not cont.doubles_off[obj.address]:
-                k = 0.5
-        return max(0, obj.power.now.generated * 0.6 + 10 * (- 10**2 / 128 + 10 / 8 + 0.4)) * k
+            k = 0.5
+        if tick > cont.psm.tick:
+            return max(0, (obj.power.now.generated * 0.6 + 9 * (- 8**2 / 128 + 8 / 8 + 0.4)) * 0.6 + 9 * (- 8**2 / 128 + 8 / 8 + 0.4)) * k
+
+        return max(0, obj.power.now.generated * 0.6 + 9 * (- 8**2 / 128 + 8 / 8 + 0.4)) * k
 
 
 def cast_multiplier(cast, cont):
@@ -493,19 +548,18 @@ def get_consumption(obj: Object, tick: int, cont: Controller) -> float:
     cast = None
     k = 1
 
-    match obj.type:
-        case 'houseA':
-            cast = cont.psm.forecasts.houseA
-        case 'houseB':
-            cast = cont.psm.forecasts.houseB
-        case 'factory':
-            cast = cont.psm.forecasts.factory
-            if not cont.doubles_off[obj.address]:
-                k = 0.5
-        case 'hospital':
-            cast = cont.psm.forecasts.hospital
-            if not cont.doubles_off[obj.address]:
-                k = 0.5
+    if obj.type == 'houseA':
+        cast = cont.psm.forecasts.houseA
+    if obj.type == 'houseB':
+        cast = cont.psm.forecasts.houseB
+    if obj.type == 'factory':
+        cast = cont.psm.forecasts.factory
+        if not cont.doubles_off[obj.address]:
+            k = 0.5
+    if obj.type == 'hospital':
+        cast = cont.psm.forecasts.hospital
+        if not cont.doubles_off[obj.address]:
+            k = 0.5
 
     predict_cons = tick_forecast_con(tick, cast)
     return predict_cons * k
@@ -530,7 +584,8 @@ def get_storages(obj: Object) -> float:
 
 
 def get_storages_available(obj: Object) -> float:
-    if obj.type != 'storage' or get_stored(obj) >= 99.9:
+    global cont1
+    if obj.type != 'storage' or get_stored(obj, cont1) >= 99.9:
         return 0
     return 1
 
@@ -578,5 +633,4 @@ class Logger:
 logger = Logger('Logs/')
 
 if __name__ == '__main__':
-    for i in range(100):
-        main(i)
+    main()
